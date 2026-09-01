@@ -1,22 +1,33 @@
 import os
-import asyncio
 import io
 import traceback
-from fastapi import FastAPI, Request, Response, File, UploadFile, Form
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import argparse
-import json
 import tempfile
 import time
 import soundfile as sf
-from typing import List, Optional, Union
 
 from loguru import logger
 logger.add("logs/api_server_v2.log", rotation="10 MB", retention=10, level="DEBUG", enqueue=True)
 
+from indextts.api_compat import (
+    CompatAPIError,
+    close_uploads,
+    encode_audio,
+    first_value,
+    is_upload,
+    materialize_audio_source,
+    openai_error,
+    parse_bool,
+    parse_emotion_vector,
+    parse_extra_params,
+    request_payload,
+    save_upload_file,
+)
 from indextts.infer_vllm_v2 import IndexTTS2
 
 tts = None
@@ -130,85 +141,134 @@ async def tts_api_url(request: Request):
         )
 
 
-async def save_upload_file(upload: UploadFile, output_path: str):
-    with open(output_path, "wb") as output_file:
-        while chunk := await upload.read(1024 * 1024):
-            output_file.write(chunk)
-
-
-def upload_suffix(upload: UploadFile) -> str:
-    suffix = os.path.splitext(upload.filename or "")[1].lower()
-    if suffix in {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}:
-        return suffix
-    return ".wav"
-
-
-@app.post("/v1/audio/speech", responses={
-    200: {"content": {"audio/wav": {}}},
-    400: {"content": {"application/json": {}}},
-    500: {"content": {"application/json": {}}},
-})
-async def tts_api_form(
-    text: str = Form(...),
-    spk_audio: UploadFile = File(...),
-    emo_control_method: int = Form(0),
-    emo_audio: Optional[UploadFile] = File(None),
-    emo_weight: float = Form(1.0),
-    emo_vec: str = Form("[0, 0, 0, 0, 0, 0, 0, 0]"),
-    emo_text: Optional[str] = Form(None),
-    emo_random: bool = Form(False),
-    max_text_tokens_per_sentence: int = Form(120),
-):
-    if emo_control_method not in {0, 1, 2, 3}:
-        return JSONResponse(status_code=400, content={"error": "emo_control_method must be 0, 1, 2, or 3"})
-    if emo_control_method == 1 and emo_audio is None:
-        return JSONResponse(status_code=400, content={"error": "emo_audio is required when emo_control_method=1"})
-    if emo_control_method == 3 and not emo_text:
-        return JSONResponse(status_code=400, content={"error": "emo_text is required when emo_control_method=3"})
-
+@app.post("/v1/audio/speech")
+async def create_speech(request: Request):
+    speaker_upload = None
+    emotion_upload = None
+    voice_value = None
+    ref_audio_value = None
     try:
-        vector = None
-        if emo_control_method == 2:
-            vector = json.loads(emo_vec)
-            if not isinstance(vector, list) or len(vector) != 8 or not all(isinstance(value, (int, float)) for value in vector):
-                return JSONResponse(status_code=400, content={"error": "emo_vec must be a JSON array containing 8 numbers"})
-            if sum(vector) > 1.5:
-                return JSONResponse(status_code=400, content={"error": "The sum of emo_vec must not exceed 1.5"})
+        if tts is None:
+            raise CompatAPIError("TTS model is not initialized", 503)
+        payload = await request_payload(request)
+        extra_params = parse_extra_params(payload)
 
-        with tempfile.TemporaryDirectory(prefix="indextts2-upload-") as temp_dir:
-            speaker_path = os.path.join(temp_dir, "speaker" + upload_suffix(spk_audio))
-            await save_upload_file(spk_audio, speaker_path)
+        text = payload.get("input", payload.get("text"))
+        if not isinstance(text, str) or not text.strip():
+            raise CompatAPIError("input is required and must be a non-empty string")
+
+        response_format = str(payload.get("response_format", "wav")).lower()
+        # IndexTTS2 has no native speed control. Accept the compatibility field
+        # without applying it, so every request uses the model's original speed.
+        if parse_bool(payload.get("stream"), False):
+            raise CompatAPIError("streaming is not supported by this IndexTTS2 compatibility server")
+
+        speaker_upload = payload.get("spk_audio")
+        ref_audio_value = payload.get("ref_audio")
+        voice_value = payload.get("voice")
+        if isinstance(ref_audio_value, list):
+            if len(ref_audio_value) != 1:
+                raise CompatAPIError("IndexTTS2 accepts exactly one ref_audio value")
+            ref_audio_value = ref_audio_value[0]
+
+        emotion_source = first_value(payload, extra_params, "emo_audio")
+        emotion_upload = emotion_source if is_upload(emotion_source) else None
+        emo_text = first_value(payload, extra_params, "emo_text")
+        use_emo_text = parse_bool(
+            first_value(payload, extra_params, "use_emo_text"),
+            bool(emo_text),
+        )
+        emo_vector = parse_emotion_vector(
+            first_value(payload, extra_params, "emo_vector", "emo_vec")
+        )
+        emo_alpha = float(first_value(payload, extra_params, "emo_alpha", "emo_weight", default=1.0))
+        if emo_alpha < 0 or emo_alpha > 1:
+            raise CompatAPIError("emo_alpha must be between 0 and 1")
+        use_random = parse_bool(first_value(payload, extra_params, "use_random", "emo_random"), False)
+        max_text_tokens = int(
+            first_value(
+                payload,
+                extra_params,
+                "max_text_tokens_per_sentence",
+                "max_text_tokens_per_segment",
+                default=120,
+            )
+        )
+        if max_text_tokens < 1:
+            raise CompatAPIError("max_text_tokens_per_sentence must be positive")
+
+        legacy_method = payload.get("emo_control_method")
+        if legacy_method is not None:
+            legacy_method = int(legacy_method)
+            if legacy_method not in {0, 1, 2, 3}:
+                raise CompatAPIError("emo_control_method must be 0, 1, 2, or 3")
+            use_emo_text = legacy_method == 3
+            if legacy_method != 1:
+                emotion_source = None
+            if legacy_method != 2:
+                emo_vector = None
+
+        if use_emo_text:
+            emotion_source = None
+            emo_vector = None
+        elif emo_vector is not None:
+            emotion_source = None
+            emo_vector = [round(item * emo_alpha, 4) for item in emo_vector]
+
+        with tempfile.TemporaryDirectory(prefix="indextts2-request-") as temp_dir:
+            if is_upload(speaker_upload):
+                speaker_audio = await save_upload_file(speaker_upload, temp_dir, "speaker")
+            elif is_upload(ref_audio_value):
+                speaker_audio = await save_upload_file(ref_audio_value, temp_dir, "speaker")
+            elif ref_audio_value:
+                speaker_audio = await materialize_audio_source(ref_audio_value, temp_dir, "speaker")
+            elif is_upload(voice_value):
+                speaker_audio = await save_upload_file(voice_value, temp_dir, "speaker")
+            elif voice_value:
+                speaker_audio = await materialize_audio_source(
+                    voice_value,
+                    temp_dir,
+                    "speaker",
+                )
+            else:
+                raise CompatAPIError("voice, ref_audio, or spk_audio is required")
 
             emotion_path = None
-            if emo_audio is not None:
-                emotion_path = os.path.join(temp_dir, "emotion" + upload_suffix(emo_audio))
-                await save_upload_file(emo_audio, emotion_path)
+            if not use_emo_text and emo_vector is None and emotion_source:
+                if is_upload(emotion_source):
+                    emotion_audio = await save_upload_file(emotion_source, temp_dir, "emotion")
+                else:
+                    emotion_audio = await materialize_audio_source(
+                        emotion_source,
+                        temp_dir,
+                        "emotion",
+                    )
+                emotion_path = emotion_audio.path
 
-            sr, wav = await tts.infer(
-                spk_audio_prompt=speaker_path,
+            sample_rate, wav = await tts.infer(
+                spk_audio_prompt=speaker_audio.path,
                 text=text,
                 output_path=None,
-                emo_audio_prompt=emotion_path if emo_control_method == 1 else None,
-                emo_alpha=emo_weight if emo_control_method == 1 else 1.0,
-                emo_vector=vector,
-                use_emo_text=emo_control_method == 3,
+                emo_audio_prompt=emotion_path,
+                emo_alpha=emo_alpha,
+                emo_vector=emo_vector,
+                use_emo_text=use_emo_text,
                 emo_text=emo_text,
-                use_random=emo_random,
-                max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+                use_random=use_random,
+                max_text_tokens_per_sentence=max_text_tokens,
             )
 
-        with io.BytesIO() as wav_buffer:
-            sf.write(wav_buffer, wav, sr, format="WAV")
-            return Response(content=wav_buffer.getvalue(), media_type="audio/wav")
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"error": "emo_vec must be valid JSON"})
-    except Exception as ex:
-        tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
-        return JSONResponse(status_code=500, content={"status": "error", "error": tb_str})
+        audio_bytes, media_type = encode_audio(wav, sample_rate, response_format)
+        return Response(content=audio_bytes, media_type=media_type)
+    except CompatAPIError as ex:
+        return openai_error(str(ex), ex.status_code)
+    except (TypeError, ValueError) as ex:
+        return openai_error(str(ex))
+    except Exception:
+        logger.exception("/v1/audio/speech failed")
+        return openai_error("internal server error", 500)
     finally:
-        await spk_audio.close()
-        if emo_audio is not None:
-            await emo_audio.close()
+        await close_uploads(speaker_upload, ref_audio_value, voice_value, emotion_upload)
 
 
 if __name__ == "__main__":
