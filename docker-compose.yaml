@@ -6,7 +6,7 @@ services:
       - .env.example
     container_name: index-tts-server
     ports:
-      - "${PORT:-6006}:${PORT:-6006}"
+      - "${PORT:-9009}:${PORT:-9009}"
     deploy:
       resources:
         reservations:

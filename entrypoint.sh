@@ -6,7 +6,7 @@ set -e
 MODEL_DIR=${MODEL_DIR:-"/app/checkpoints/IndexTTS-2-vLLM"}
 MODEL=${MODEL:-"kusuriuri/IndexTTS-2-vLLM"}
 DOWNLOAD_MODEL=${DOWNLOAD_MODEL:-1}
-PORT=${PORT:-6006}
+PORT=${PORT:-9009}
 
 required_model_files=(
     "config.yaml"
