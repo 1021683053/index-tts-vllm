@@ -1,4 +1,4 @@
-ARG VLLM_BASE_IMAGE=m.daocloud.io/docker.io/vllm/vllm-openai:v0.16.0
+ARG VLLM_BASE_IMAGE=vllm/vllm-openai:v0.16.0
 FROM ${VLLM_BASE_IMAGE}
 
 # Prefer the host driver libraries mounted by NVIDIA Container Toolkit.  The
