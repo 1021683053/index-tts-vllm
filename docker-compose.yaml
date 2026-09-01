@@ -12,7 +12,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["7"]
               capabilities: [gpu]
     volumes:
       - ./assets:/app/assets
