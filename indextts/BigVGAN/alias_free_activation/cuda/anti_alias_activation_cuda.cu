@@ -18,7 +18,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAStream.h>
 #include <torch/extension.h>
 #include "type_shim.h"
 #include <assert.h>
@@ -205,7 +205,7 @@ namespace
             dim3 threads(threads_per_block, 1, 1);
 
             anti_alias_activation_forward<input_t, output_t, acc_t>
-                <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, up_ftr, down_ftr, alpha, beta, batch_size, channels, seq_len);
+                <<<blocks, threads, 0, c10::cuda::getCurrentCUDAStream()>>>(dst, src, up_ftr, down_ftr, alpha, beta, batch_size, channels, seq_len);
         }
     }
 }
