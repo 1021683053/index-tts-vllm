@@ -4,9 +4,11 @@ import binascii
 import io
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 import socket
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -14,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import soundfile as sf
 from fastapi.responses import JSONResponse
 
@@ -130,7 +133,29 @@ def parse_emotion_vector(value):
     return vector
 
 
-def encode_audio(wav, sample_rate: int, response_format: str) -> tuple[bytes, str]:
+def parse_speed(value) -> float:
+    try:
+        speed = float(value) if value not in (None, "") else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(speed) or speed < 0.25 or speed > 4.0:
+        return 1.0
+    return speed
+
+
+def _atempo_filter(speed: float) -> str:
+    factors = []
+    while speed < 0.5:
+        factors.append(0.5)
+        speed /= 0.5
+    while speed > 2.0:
+        factors.append(2.0)
+        speed /= 2.0
+    factors.append(speed)
+    return ",".join(f"atempo={factor:.10g}" for factor in factors)
+
+
+def encode_audio(wav, sample_rate: int, response_format: str, speed: float = 1.0) -> tuple[bytes, str]:
     formats = {
         "wav": ("WAV", "PCM_16", "audio/wav"),
         "flac": ("FLAC", "PCM_16", "audio/flac"),
@@ -139,6 +164,56 @@ def encode_audio(wav, sample_rate: int, response_format: str) -> tuple[bytes, st
     if response_format not in formats:
         raise CompatAPIError("response_format must be wav, flac, or pcm for the IndexTTS2 backend")
     container_format, subtype, media_type = formats[response_format]
+
+    if speed != 1.0:
+        with io.BytesIO() as input_buffer:
+            sf.write(input_buffer, wav, sample_rate, format="WAV", subtype="PCM_16")
+            input_bytes = input_buffer.getvalue()
+
+        channels = 1 if getattr(wav, "ndim", 1) == 1 else wav.shape[1]
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-f",
+            "wav",
+            "-i",
+            "pipe:0",
+            "-filter:a",
+            _atempo_filter(speed),
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(channels),
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "pipe:1",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                input=input_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=120,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as ex:
+            stderr_output = getattr(ex, "stderr", None) or b""
+            if isinstance(stderr_output, bytes):
+                stderr_output = stderr_output.decode("utf-8", errors="replace")
+            stderr = stderr_output.strip()
+            raise RuntimeError(f"ffmpeg audio speed adjustment failed: {stderr}") from ex
+
+        adjusted_wav = np.frombuffer(result.stdout, dtype="<i2")
+        if channels > 1:
+            adjusted_wav = adjusted_wav.reshape(-1, channels)
+        wav = adjusted_wav
+
     with io.BytesIO() as audio_buffer:
         sf.write(audio_buffer, wav, sample_rate, format=container_format, subtype=subtype)
         return audio_buffer.getvalue(), media_type

@@ -1,4 +1,5 @@
 import os
+import asyncio
 import io
 import traceback
 from fastapi import FastAPI, Request, Response
@@ -25,6 +26,7 @@ from indextts.api_compat import (
     parse_bool,
     parse_emotion_vector,
     parse_extra_params,
+    parse_speed,
     request_payload,
     save_upload_file,
 )
@@ -158,8 +160,7 @@ async def create_speech(request: Request):
             raise CompatAPIError("input is required and must be a non-empty string")
 
         response_format = str(payload.get("response_format", "wav")).lower()
-        # IndexTTS2 has no native speed control. Accept the compatibility field
-        # without applying it, so every request uses the model's original speed.
+        speed = parse_speed(first_value(payload, extra_params, "speed", default=1.0))
         if parse_bool(payload.get("stream"), False):
             raise CompatAPIError("streaming is not supported by this IndexTTS2 compatibility server")
 
@@ -258,7 +259,13 @@ async def create_speech(request: Request):
                 max_text_tokens_per_sentence=max_text_tokens,
             )
 
-        audio_bytes, media_type = encode_audio(wav, sample_rate, response_format)
+        audio_bytes, media_type = await asyncio.to_thread(
+            encode_audio,
+            wav,
+            sample_rate,
+            response_format,
+            speed,
+        )
         return Response(content=audio_bytes, media_type=media_type)
     except CompatAPIError as ex:
         return openai_error(str(ex), ex.status_code)
