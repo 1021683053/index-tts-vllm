@@ -15,12 +15,22 @@ os.environ["TORCH_CUDA_ARCH_LIST"] = ""
 
 
 def load():
-    # Check if cuda 11 is installed for compute capability 8.0
+    import torch
+
     cc_flag = []
-    _, bare_metal_major, _ = _get_cuda_bare_metal_version(cpp_extension.CUDA_HOME)
-    if int(bare_metal_major) >= 11:
+    if torch.cuda.is_available():
+        major, minor = torch.cuda.get_device_capability()
+        compute_capability = major * 10 + minor
+        print(f"Detected GPU compute capability: {major}.{minor} (sm_{compute_capability})")
         cc_flag.append("-gencode")
-        cc_flag.append("arch=compute_80,code=sm_80")
+        cc_flag.append(
+            f"arch=compute_{compute_capability},code=sm_{compute_capability}"
+        )
+    else:
+        _, bare_metal_major, _ = _get_cuda_bare_metal_version(cpp_extension.CUDA_HOME)
+        if int(bare_metal_major) >= 11:
+            cc_flag.extend(["-gencode", "arch=compute_80,code=sm_80"])
+        print("No CUDA device detected, using fallback architecture sm_80")
 
     # Build path
     srcpath = pathlib.Path(__file__).parent.absolute()
@@ -38,8 +48,6 @@ def load():
             ],
             extra_cuda_cflags=[
                 "-O3",
-                "-gencode",
-                "arch=compute_70,code=sm_70",
                 "--use_fast_math",
             ]
             + extra_cuda_flags

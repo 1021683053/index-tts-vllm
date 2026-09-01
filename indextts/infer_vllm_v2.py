@@ -110,10 +110,12 @@ class IndexTTS2:
         if self.use_cuda_kernel:
             # preload the CUDA kernel for BigVGAN
             try:
-                from indextts.BigVGAN.alias_free_activation.cuda import load
+                from indextts.s2mel.modules.bigvgan.alias_free_activation.cuda import activation1d
 
-                anti_alias_activation_cuda = load.load()
-                logger.info(f">> Preload custom CUDA kernel for BigVGAN {anti_alias_activation_cuda}")
+                logger.info(
+                    f">> Preload custom CUDA kernel for BigVGAN "
+                    f"{activation1d.anti_alias_activation_cuda}"
+                )
             except Exception as ex:
                 traceback.print_exc()
                 logger.info(">> Failed to load custom CUDA kernel for BigVGAN. Falling back to torch.")
@@ -167,7 +169,10 @@ class IndexTTS2:
 
         bigvgan_name = self.cfg.vocoder.name
         # self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=False, cache_dir=os.path.join(self.model_dir, "bigvgan"))
-        self.bigvgan = bigvgan.BigVGAN.from_pretrained(os.path.join(self.model_dir, "bigvgan"))
+        self.bigvgan = bigvgan.BigVGAN.from_pretrained(
+            os.path.join(self.model_dir, "bigvgan"),
+            use_cuda_kernel=self.use_cuda_kernel,
+        )
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
