@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import argparse
 import json
+import tempfile
 import time
 import soundfile as sf
 from typing import List, Optional, Union
@@ -127,6 +128,87 @@ async def tts_api_url(request: Request):
                 "error": str(tb_str)
             }
         )
+
+
+async def save_upload_file(upload: UploadFile, output_path: str):
+    with open(output_path, "wb") as output_file:
+        while chunk := await upload.read(1024 * 1024):
+            output_file.write(chunk)
+
+
+def upload_suffix(upload: UploadFile) -> str:
+    suffix = os.path.splitext(upload.filename or "")[1].lower()
+    if suffix in {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}:
+        return suffix
+    return ".wav"
+
+
+@app.post("/v1/audio/speech", responses={
+    200: {"content": {"audio/wav": {}}},
+    400: {"content": {"application/json": {}}},
+    500: {"content": {"application/json": {}}},
+})
+async def tts_api_form(
+    text: str = Form(...),
+    spk_audio: UploadFile = File(...),
+    emo_control_method: int = Form(0),
+    emo_audio: Optional[UploadFile] = File(None),
+    emo_weight: float = Form(1.0),
+    emo_vec: str = Form("[0, 0, 0, 0, 0, 0, 0, 0]"),
+    emo_text: Optional[str] = Form(None),
+    emo_random: bool = Form(False),
+    max_text_tokens_per_sentence: int = Form(120),
+):
+    if emo_control_method not in {0, 1, 2, 3}:
+        return JSONResponse(status_code=400, content={"error": "emo_control_method must be 0, 1, 2, or 3"})
+    if emo_control_method == 1 and emo_audio is None:
+        return JSONResponse(status_code=400, content={"error": "emo_audio is required when emo_control_method=1"})
+    if emo_control_method == 3 and not emo_text:
+        return JSONResponse(status_code=400, content={"error": "emo_text is required when emo_control_method=3"})
+
+    try:
+        vector = None
+        if emo_control_method == 2:
+            vector = json.loads(emo_vec)
+            if not isinstance(vector, list) or len(vector) != 8 or not all(isinstance(value, (int, float)) for value in vector):
+                return JSONResponse(status_code=400, content={"error": "emo_vec must be a JSON array containing 8 numbers"})
+            if sum(vector) > 1.5:
+                return JSONResponse(status_code=400, content={"error": "The sum of emo_vec must not exceed 1.5"})
+
+        with tempfile.TemporaryDirectory(prefix="indextts2-upload-") as temp_dir:
+            speaker_path = os.path.join(temp_dir, "speaker" + upload_suffix(spk_audio))
+            await save_upload_file(spk_audio, speaker_path)
+
+            emotion_path = None
+            if emo_audio is not None:
+                emotion_path = os.path.join(temp_dir, "emotion" + upload_suffix(emo_audio))
+                await save_upload_file(emo_audio, emotion_path)
+
+            sr, wav = await tts.infer(
+                spk_audio_prompt=speaker_path,
+                text=text,
+                output_path=None,
+                emo_audio_prompt=emotion_path if emo_control_method == 1 else None,
+                emo_alpha=emo_weight if emo_control_method == 1 else 1.0,
+                emo_vector=vector,
+                use_emo_text=emo_control_method == 3,
+                emo_text=emo_text,
+                use_random=emo_random,
+                max_text_tokens_per_sentence=max_text_tokens_per_sentence,
+            )
+
+        with io.BytesIO() as wav_buffer:
+            sf.write(wav_buffer, wav, sr, format="WAV")
+            return Response(content=wav_buffer.getvalue(), media_type="audio/wav")
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=400, content={"error": "emo_vec must be valid JSON"})
+    except Exception as ex:
+        tb_str = "".join(traceback.format_exception(type(ex), ex, ex.__traceback__))
+        return JSONResponse(status_code=500, content={"status": "error", "error": tb_str})
+    finally:
+        await spk_audio.close()
+        if emo_audio is not None:
+            await emo_audio.close()
 
 
 if __name__ == "__main__":

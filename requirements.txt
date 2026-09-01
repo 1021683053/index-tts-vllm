@@ -1,4 +1,5 @@
 vllm==0.16.0
+descript-audiotools==0.7.2
 matplotlib==3.8.4
 omegaconf
 sentencepiece
@@ -8,6 +9,7 @@ ninja
 modelscope
 munch==4.0.0
 loguru
+python-multipart
 
 WeTextProcessing; platform_machine != "Darwin"
 wetext; platform_system == "Darwin"
