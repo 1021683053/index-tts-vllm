@@ -111,6 +111,22 @@ def first_value(payload: dict, extra_params: dict, *names, default=None):
     return default
 
 
+def parse_seed(value) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise CompatAPIError("seed must be a non-negative integer")
+    try:
+        seed = int(value)
+    except (TypeError, ValueError, OverflowError) as ex:
+        raise CompatAPIError("seed must be a non-negative integer") from ex
+    if isinstance(value, float) and not value.is_integer():
+        raise CompatAPIError("seed must be a non-negative integer")
+    if seed < 0 or seed > 2**63 - 1:
+        raise CompatAPIError("seed must be a non-negative integer")
+    return seed
+
+
 def parse_emotion_vector(value):
     if value is None or value == "":
         return None

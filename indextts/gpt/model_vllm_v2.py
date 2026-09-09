@@ -202,7 +202,7 @@ class UnifiedVoice(nn.Module):
         conds = self.emo_perceiver_encoder(speech_conditioning_input, conds_mask)  # (b, 1, d)
         return conds.squeeze(1)
 
-    async def inference_speech(self, speech_condition, text_inputs, emo_speech_condition=None, cond_lengths=None, emo_cond_lengths=None, emo_vec=None, use_speed=False):
+    async def inference_speech(self, speech_condition, text_inputs, emo_speech_condition=None, cond_lengths=None, emo_cond_lengths=None, emo_vec=None, use_speed=False, seed=None):
         if speech_condition.ndim == 2:
             speech_condition = speech_condition.unsqueeze(0)
         if emo_speech_condition is None:
@@ -240,7 +240,17 @@ class UnifiedVoice(nn.Module):
         tokens_prompt = TokensPrompt(prompt=fake_inputs, multi_modal_data=multi_modal_data)
         # tokens_prompt = TokensPrompt(prompt_token_ids=fake_inputs, multi_modal_data=multi_modal_data)
         request_id = uuid.uuid4().hex
-        output_generator = self.llm.generate(tokens_prompt, sampling_params=self.sampling_params, request_id=request_id)
+        sampling_params = SamplingParams(
+            temperature=self.sampling_params.temperature,
+            top_p=self.sampling_params.top_p,
+            top_k=self.sampling_params.top_k,
+            repetition_penalty=self.sampling_params.repetition_penalty,
+            max_tokens=self.sampling_params.max_tokens,
+            seed=seed,
+            stop_token_ids=list(self.sampling_params.stop_token_ids),
+            include_stop_str_in_output=self.sampling_params.include_stop_str_in_output,
+        )
+        output_generator = self.llm.generate(tokens_prompt, sampling_params=sampling_params, request_id=request_id)
         gpt_stt = time.time()
         prefill_flag = True
         async for output in output_generator:
@@ -248,7 +258,7 @@ class UnifiedVoice(nn.Module):
                 logger.info(f"[{request_id}] [prefill time: {(time.time() - gpt_stt):.4f}]")
                 gpt_stt = time.time()
                 prefill_flag = False
-        logger.info(f"[{request_id}] [decode time: {(time.time() - gpt_stt):.4f}] [decode len: {len(output.outputs[0].token_ids)}]")
+        logger.info(f"[{request_id}] [seed: {seed}] [decode time: {(time.time() - gpt_stt):.4f}] [decode len: {len(output.outputs[0].token_ids)}]")
         codes = output.outputs[0].token_ids[:-2]
         codes = torch.tensor(codes, device=text_inputs.device, dtype=torch.long).unsqueeze(0)
 

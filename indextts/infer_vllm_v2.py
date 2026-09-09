@@ -247,8 +247,9 @@ class IndexTTS2:
               emo_audio_prompt=None, emo_alpha=1.0,
               emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
-              verbose=False, max_text_tokens_per_sentence=120, **generation_kwargs):
+              verbose=False, max_text_tokens_per_sentence=120, seed=None, **generation_kwargs):
         logger.info(">> start inference...")
+        logger.info(f">> seed: {seed}")
         start_time = time.perf_counter()
 
         if use_emo_text:
@@ -258,7 +259,7 @@ class IndexTTS2:
             # assert emo_alpha == 1.0
             if emo_text is None:
                 emo_text = text
-            emo_dict, content = await self.qwen_emo.inference(emo_text)
+            emo_dict, content = await self.qwen_emo.inference(emo_text, seed=seed)
             # logger.info(emo_dict)
             emo_vector = list(emo_dict.values())
 
@@ -303,7 +304,8 @@ class IndexTTS2:
         if emo_vector is not None:
             weight_vector = torch.tensor(emo_vector).to(self.device)
             if use_random:
-                random_index = [random.randint(0, x - 1) for x in self.emo_num]
+                random_source = random if seed is None else random.Random(seed)
+                random_index = [random_source.randint(0, x - 1) for x in self.emo_num]
             else:
                 random_index = [find_most_similar_cosine(style, tmp) for tmp in self.spk_matrix]
 
@@ -337,7 +339,8 @@ class IndexTTS2:
         s2mel_time = 0
         bigvgan_time = 0
         has_warned = False
-        for sent in sentences:
+        for sent_idx, sent in enumerate(sentences):
+            segment_seed = None if seed is None else (seed + sent_idx) % (2**63)
             text_tokens = self.tokenizer.convert_tokens_to_ids(sent)
             text_tokens = torch.tensor(text_tokens, dtype=torch.int32, device=self.device).unsqueeze(0)
 
@@ -369,6 +372,7 @@ class IndexTTS2:
                     cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=text_tokens.device),
                     emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=text_tokens.device),
                     emo_vec=emovec,
+                    seed=segment_seed,
                 )
                 gpt_gen_time += time.perf_counter() - m_start_time
                 # if not has_warned and (codes[:, -1] != self.stop_mel_token).any():
@@ -433,6 +437,11 @@ class IndexTTS2:
                     S_infer = S_infer + latent
                     target_lengths = (code_lens * 1.72).long()
 
+                    cfm_generator = None
+                    if segment_seed is not None:
+                        cfm_generator = torch.Generator(device=S_infer.device)
+                        cfm_generator.manual_seed(segment_seed)
+
                     cond = self.s2mel.models['length_regulator'](S_infer,
                                                                  ylens=target_lengths,
                                                                  n_quantizers=3,
@@ -442,7 +451,8 @@ class IndexTTS2:
                                                                    torch.LongTensor([cat_condition.size(1)]).to(
                                                                        cond.device),
                                                                    ref_mel, style, None, diffusion_steps,
-                                                                   inference_cfg_rate=inference_cfg_rate)
+                                                                   inference_cfg_rate=inference_cfg_rate,
+                                                                   generator=cfm_generator)
                     vc_target = vc_target[:, :, ref_mel.size(-1):]
                     s2mel_time += time.perf_counter() - m_start_time
 
@@ -576,7 +586,7 @@ class QwenEmotion:
 
         return emotion_dict
 
-    async def inference(self, text_input):
+    async def inference(self, text_input, seed=None):
         messages = [
             {"role": "system", "content": f"{self.prompt}"},
             {"role": "user", "content": f"{text_input}"}
@@ -601,6 +611,7 @@ class QwenEmotion:
         
         sampling_params = SamplingParams(
             max_tokens=2048,  # 32768
+            seed=seed,
         )
         tokens_prompt = TokensPrompt(prompt_token_ids=model_inputs)
         output_generator = self.model.generate(tokens_prompt, sampling_params=sampling_params, request_id=uuid.uuid4().hex)

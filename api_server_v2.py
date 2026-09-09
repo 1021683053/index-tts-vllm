@@ -26,6 +26,7 @@ from indextts.api_compat import (
     parse_bool,
     parse_emotion_vector,
     parse_extra_params,
+    parse_seed,
     parse_speed,
     request_payload,
     save_upload_file,
@@ -94,6 +95,7 @@ async def tts_api_url(request: Request):
         emo_vec = data.get("emo_vec", [0] * 8)
         emo_text = data.get("emo_text", None)
         emo_random = data.get("emo_random", False)
+        seed = parse_seed(data.get("seed"))
         max_text_tokens_per_sentence = data.get("max_text_tokens_per_sentence", 120)
 
         global tts
@@ -124,6 +126,7 @@ async def tts_api_url(request: Request):
                         emo_audio_prompt=emo_ref_path, emo_alpha=emo_weight,
                         emo_vector=vec,
                         use_emo_text=(emo_control_method==3), emo_text=emo_text,use_random=emo_random,
+                        seed=seed,
                         max_text_tokens_per_sentence=int(max_text_tokens_per_sentence))
         
         with io.BytesIO() as wav_buffer:
@@ -161,6 +164,7 @@ async def create_speech(request: Request):
 
         response_format = str(payload.get("response_format", "wav")).lower()
         speed = parse_speed(first_value(payload, extra_params, "speed", default=1.0))
+        seed = parse_seed(first_value(payload, extra_params, "seed"))
         if parse_bool(payload.get("stream"), False):
             raise CompatAPIError("streaming is not supported by this IndexTTS2 compatibility server")
 
@@ -256,6 +260,7 @@ async def create_speech(request: Request):
                 use_emo_text=use_emo_text,
                 emo_text=emo_text,
                 use_random=use_random,
+                seed=seed,
                 max_text_tokens_per_sentence=max_text_tokens,
             )
 

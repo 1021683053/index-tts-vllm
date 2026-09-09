@@ -20,6 +20,7 @@ class IndexTTS2RequestData:
     emo_vec: List[float] = None
     emo_text: Optional[str] = None
     emo_random: bool = False
+    seed: Optional[int] = None
     max_text_tokens_per_sentence: int = 120
 
     def __post_init__(self):

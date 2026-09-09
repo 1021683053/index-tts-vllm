@@ -28,7 +28,7 @@ class BASECFM(torch.nn.Module, ABC):
             self.zero_prompt_speech_token = False
 
     @torch.inference_mode()
-    def inference(self, mu, x_lens, prompt, style, f0, n_timesteps, temperature=1.0, inference_cfg_rate=0.5):
+    def inference(self, mu, x_lens, prompt, style, f0, n_timesteps, temperature=1.0, inference_cfg_rate=0.5, generator=None):
         """Forward diffusion
 
         Args:
@@ -43,13 +43,14 @@ class BASECFM(torch.nn.Module, ABC):
             f0: None
             n_timesteps (int): number of diffusion steps
             temperature (float, optional): temperature for scaling noise. Defaults to 1.0.
+            generator (torch.Generator, optional): request-local random generator.
 
         Returns:
             sample: generated mel-spectrogram
                 shape: (batch_size, 80, mel_timesteps)
         """
         B, T = mu.size(0), mu.size(1)
-        z = torch.randn([B, self.in_channels, T], device=mu.device) * temperature
+        z = torch.randn([B, self.in_channels, T], device=mu.device, generator=generator) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device)
         # t_span = t_span + (-1) * (torch.cos(torch.pi / 2 * t_span) - 1 + t_span)
         return self.solve_euler(z, x_lens, prompt, mu, style, f0, t_span, inference_cfg_rate)
