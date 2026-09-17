@@ -63,9 +63,8 @@ The `v2-cpu` branch includes a native PyTorch CPU backend. It does not use vLLM 
 uv venv --python 3.11 --seed
 source .venv/bin/activate
 pip install \
-  --index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
-  --extra-index-url https://mirrors.aliyun.com/pypi/simple \
-  torch==2.1.2+cpu torchaudio==2.1.2+cpu
+  https://mirrors.aliyun.com/pytorch-wheels/cpu/torch-2.1.2%2Bcpu-cp311-cp311-linux_x86_64.whl \
+  https://mirrors.aliyun.com/pytorch-wheels/cpu/torchaudio-2.1.2%2Bcpu-cp311-cp311-linux_x86_64.whl
 uv pip install \
   --default-index https://mirrors.aliyun.com/pypi/simple \
   -r requirements-cpu.txt

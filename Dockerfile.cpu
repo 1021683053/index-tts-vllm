@@ -25,9 +25,8 @@ WORKDIR /app
 COPY requirements-cpu.txt ./
 RUN pip install --no-cache-dir uv \
     && pip install --no-cache-dir \
-        --index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
-        --extra-index-url https://mirrors.aliyun.com/pypi/simple \
-        torch==2.1.2+cpu torchaudio==2.1.2+cpu \
+        https://mirrors.aliyun.com/pytorch-wheels/cpu/torch-2.1.2%2Bcpu-cp311-cp311-linux_x86_64.whl \
+        https://mirrors.aliyun.com/pytorch-wheels/cpu/torchaudio-2.1.2%2Bcpu-cp311-cp311-linux_x86_64.whl \
     && uv pip install --system \
         --default-index https://mirrors.aliyun.com/pypi/simple \
         -r requirements-cpu.txt
