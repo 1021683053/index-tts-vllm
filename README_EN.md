@@ -62,7 +62,10 @@ The `v2-cpu` branch includes a native PyTorch CPU backend. It does not use vLLM 
 ```bash
 uv venv --python 3.12 --seed
 source .venv/bin/activate
-uv pip install -r requirements-cpu.txt --torch-backend cpu
+uv pip install \
+  --default-index https://mirrors.aliyun.com/pypi/simple \
+  --extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
+  -r requirements-cpu.txt
 
 # WebUI
 python webui_v2.py --backend torch --device cpu --model_dir checkpoints/IndexTTS-2-vLLM
@@ -79,6 +82,14 @@ docker run --rm -p 9009:9009 -v "$PWD/checkpoints:/app/checkpoints:ro" indextts2
 ```
 
 The CPU backend does not support `--is_fp16`; keep FP32. 8 GB RAM is not a supported configuration, especially with `use_emo_text`. Start with a single short request on a host with at least 16 GB RAM and measure the peak memory and latency before deployment.
+
+Download the model from the China-hosted ModelScope service:
+
+```bash
+modelscope download --model kusuriuri/IndexTTS-2-vLLM --local_dir ./checkpoints/IndexTTS-2-vLLM
+```
+
+The code fork remains on GitHub. If the deployment machine cannot reach GitHub, create a `git bundle` on a connected machine or mirror the branch to your internal Git service.
 
 
 ### 4. Download model weights

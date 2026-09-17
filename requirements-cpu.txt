@@ -1,5 +1,9 @@
 # Native CPU runtime for IndexTTS2. This deliberately does not install vLLM.
-# With uv, add --torch-backend cpu so torch and torchaudio resolve to CPU wheels.
+# Both indexes are domestic Aliyun mirrors. The second one supplies CPU-only
+# PyTorch wheels for Linux x86_64.
+--index-url https://mirrors.aliyun.com/pypi/simple
+--extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu
+
 torch
 torchaudio
 transformers

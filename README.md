@@ -62,7 +62,10 @@ uv pip install -r requirements.txt -c overrides.txt
 ```bash
 uv venv --python 3.12 --seed
 source .venv/bin/activate
-uv pip install -r requirements-cpu.txt --torch-backend cpu
+uv pip install \
+  --default-index https://mirrors.aliyun.com/pypi/simple \
+  --extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
+  -r requirements-cpu.txt
 
 # WebUI
 python webui_v2.py --backend torch --device cpu --model_dir checkpoints/IndexTTS-2-vLLM
@@ -79,6 +82,14 @@ docker run --rm -p 9009:9009 -v "$PWD/checkpoints:/app/checkpoints:ro" indextts2
 ```
 
 CPU 后端不支持 `--is_fp16`；请保持 FP32。8GB 内存不属于支持配置，尤其不能使用 `use_emo_text`。建议至少 16GB 内存，并在部署主机上用短文本、单请求先验证实际峰值内存和生成时间。
+
+模型请使用国内 ModelScope 下载：
+
+```bash
+modelscope download --model kusuriuri/IndexTTS-2-vLLM --local_dir ./checkpoints/IndexTTS-2-vLLM
+```
+
+代码 fork 仍托管在 GitHub；若部署主机无法访问 GitHub，请从可联网机器执行 `git bundle create indextts-vllm.bundle v2-cpu` 后离线传入，或同步至企业内部 Git 镜像。
 
 
 ### 4. 下载模型权重
