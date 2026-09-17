@@ -60,7 +60,7 @@ uv pip install -r requirements.txt -c overrides.txt
 `v2-cpu` 分支提供原生 PyTorch CPU 后端，不使用 vLLM，也不需要更换现有 IndexTTS2 权重。CPU 推理为单请求串行模式，适合离线或低频生成；`use_emo_text` 首次使用时才会加载 Qwen 情感模型，从而避免普通请求占用这部分内存。
 
 ```bash
-uv venv --python 3.12 --seed
+uv venv --python 3.11 --seed
 source .venv/bin/activate
 uv pip install \
   --default-index https://mirrors.aliyun.com/pypi/simple \

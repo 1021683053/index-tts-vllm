@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# The domestic CPU PyTorch mirror currently supplies compatible Linux wheels
+# through CPython 3.11. The native CPU backend does not require vLLM's 3.12.
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -60,7 +60,7 @@ uv pip install -r requirements.txt -c overrides.txt
 The `v2-cpu` branch includes a native PyTorch CPU backend. It does not use vLLM and reuses the existing IndexTTS2 weights. CPU inference is serialized for a predictable memory footprint and is intended for offline or low-rate use. The Qwen emotion model is loaded only when `use_emo_text` is requested.
 
 ```bash
-uv venv --python 3.12 --seed
+uv venv --python 3.11 --seed
 source .venv/bin/activate
 uv pip install \
   --default-index https://mirrors.aliyun.com/pypi/simple \
