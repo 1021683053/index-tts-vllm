@@ -22,6 +22,8 @@ parser.add_argument("--verbose", action="store_true", default=False, help="Enabl
 parser.add_argument("--port", type=int, default=6006, help="Port to run the web UI on")
 parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the web UI on")
 parser.add_argument("--model_dir", type=str, default="checkpoints/IndexTTS-2-vLLM", help="Model checkpoints directory")
+parser.add_argument("--backend", choices=("vllm", "torch"), default="vllm", help="Inference backend; use torch with --device cpu for native CPU inference")
+parser.add_argument("--device", type=str, default=None, help="PyTorch device. CPU backend requires 'cpu'.")
 parser.add_argument("--is_fp16", action="store_true", default=False, help="Fp16 infer")
 parser.add_argument("--gpu_memory_utilization", type=float, default=0.25)
 parser.add_argument("--qwenemo_gpu_memory_utilization", type=float, default=0.10)
@@ -155,6 +157,8 @@ if __name__ == "__main__":
     tts = IndexTTS2(
         model_dir=cmd_args.model_dir,
         is_fp16=cmd_args.is_fp16,
+        device=cmd_args.device,
+        backend=cmd_args.backend,
         gpu_memory_utilization=cmd_args.gpu_memory_utilization,
         qwenemo_gpu_memory_utilization=cmd_args.qwenemo_gpu_memory_utilization,
     )

@@ -1,0 +1,27 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ffmpeg \
+        libsndfile1 \
+        libsm6 \
+        libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-cpu.txt ./
+RUN pip install --no-cache-dir uv \
+    && uv pip install --system --torch-backend cpu -r requirements-cpu.txt
+
+COPY indextts /app/indextts
+COPY tools /app/tools
+COPY api_server_v2.py /app/api_server_v2.py
+COPY webui_v2.py /app/webui_v2.py
+
+# Model weights are mounted at runtime rather than baked into the image.
+EXPOSE 9009
+ENTRYPOINT ["python", "api_server_v2.py", "--backend", "torch", "--device", "cpu"]

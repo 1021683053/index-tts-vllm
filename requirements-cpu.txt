@@ -1,0 +1,22 @@
+# Native CPU runtime for IndexTTS2. This deliberately does not install vLLM.
+# With uv, add --torch-backend cpu so torch and torchaudio resolve to CPU wheels.
+torch
+torchaudio
+transformers
+safetensors
+accelerate
+descript-audiotools==0.7.2
+matplotlib==3.8.4
+omegaconf
+sentencepiece
+librosa
+gradio
+modelscope
+munch==4.0.0
+loguru
+python-multipart
+soundfile
+pandas
+
+WeTextProcessing; platform_machine != "Darwin"
+wetext; platform_system == "Darwin"

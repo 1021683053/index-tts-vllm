@@ -55,6 +55,31 @@ pip install uv
 uv pip install -r requirements.txt -c overrides.txt
 ```
 
+### CPU (IndexTTS2, experimental)
+
+The `v2-cpu` branch includes a native PyTorch CPU backend. It does not use vLLM and reuses the existing IndexTTS2 weights. CPU inference is serialized for a predictable memory footprint and is intended for offline or low-rate use. The Qwen emotion model is loaded only when `use_emo_text` is requested.
+
+```bash
+uv venv --python 3.12 --seed
+source .venv/bin/activate
+uv pip install -r requirements-cpu.txt --torch-backend cpu
+
+# WebUI
+python webui_v2.py --backend torch --device cpu --model_dir checkpoints/IndexTTS-2-vLLM
+
+# API
+python api_server_v2.py --backend torch --device cpu --model_dir checkpoints/IndexTTS-2-vLLM
+```
+
+You can also build a CPU image; mount the weights when running it:
+
+```bash
+docker build -f Dockerfile.cpu -t indextts2-cpu .
+docker run --rm -p 9009:9009 -v "$PWD/checkpoints:/app/checkpoints:ro" indextts2-cpu --model_dir /app/checkpoints/IndexTTS-2-vLLM
+```
+
+The CPU backend does not support `--is_fp16`; keep FP32. 8 GB RAM is not a supported configuration, especially with `use_emo_text`. Start with a single short request on a host with at least 16 GB RAM and measure the peak memory and latency before deployment.
+
 
 ### 4. Download model weights
 

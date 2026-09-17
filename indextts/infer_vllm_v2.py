@@ -4,7 +4,7 @@ import re
 import time
 import traceback
 from typing import List
-import uuid
+import asyncio
 
 import librosa
 import torch
@@ -12,9 +12,7 @@ import torchaudio
 # from torch.nn.utils.rnn import pad_sequence
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from transformers import SeamlessM4TFeatureExtractor
-from transformers import AutoTokenizer
-from modelscope import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, SeamlessM4TFeatureExtractor
 import safetensors
 from loguru import logger
 
@@ -24,7 +22,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from indextts.BigVGAN.models import BigVGAN as Generator
-from indextts.gpt.model_vllm_v2 import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
 from indextts.utils.maskgct_utils import build_semantic_model, build_semantic_codec
@@ -37,14 +34,11 @@ from indextts.s2mel.modules.audio import mel_spectrogram
 
 import torch.nn.functional as F
 
-from vllm import SamplingParams, TokensPrompt
-from vllm.engine.arg_utils import AsyncEngineArgs
-from vllm.v1.engine.async_llm import AsyncLLM
-
 
 class IndexTTS2:
     def __init__(
-        self, model_dir="checkpoints", is_fp16=False, device=None, use_cuda_kernel=None, gpu_memory_utilization=0.25, qwenemo_gpu_memory_utilization=0.10
+        self, model_dir="checkpoints", is_fp16=False, device=None, use_cuda_kernel=None,
+        gpu_memory_utilization=0.25, qwenemo_gpu_memory_utilization=0.10, backend="vllm"
     ):
         """
         Args:
@@ -53,7 +47,12 @@ class IndexTTS2:
             is_fp16 (bool): whether to use fp16.
             device (str): device to use (e.g., 'cuda:0', 'cpu'). If None, it will be set automatically based on the availability of CUDA or MPS.
             use_cuda_kernel (None | bool): whether to use BigVGan custom fused activation CUDA kernel, only for CUDA device.
+            backend (str): ``vllm`` for the original accelerated backend, or ``torch`` for native PyTorch inference.
         """
+        if backend not in {"vllm", "torch"}:
+            raise ValueError(f"Unsupported backend: {backend!r}. Expected 'vllm' or 'torch'.")
+        self.backend = backend
+        self._cpu_inference_lock = None
         if device is not None:
             self.device = device
             self.is_fp16 = False if device == "cpu" else is_fp16
@@ -72,39 +71,51 @@ class IndexTTS2:
             self.use_cuda_kernel = False
             logger.info(">> Be patient, it may take a while to run in CPU mode.")
 
+        if self.backend == "torch" and self.device != "cpu":
+            raise ValueError(
+                "The torch backend on this branch is the CPU backend; pass device='cpu'."
+            )
+
         cfg_path = os.path.join(model_dir, "config.yaml")
         self.cfg = OmegaConf.load(cfg_path)
         self.model_dir = model_dir
         self.dtype = torch.float16 if self.is_fp16 else None
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
 
-        vllm_dir = os.path.join(model_dir, "gpt")
-        engine_args = AsyncEngineArgs(
-            model=vllm_dir,
-            tensor_parallel_size=1,
-            dtype="auto",
-            gpu_memory_utilization=gpu_memory_utilization,
-            async_scheduling=True,
-            enable_mm_embeds=True,
-            enable_chunked_prefill=False
-            # enforce_eager=True,
-        )
-        indextts_vllm = AsyncLLM.from_engine_args(engine_args)
-
         self.qwen_emo = QwenEmotion(
             os.path.join(self.model_dir, self.cfg.qwen_emo_path),
+            backend=self.backend,
+            device=self.device,
             gpu_memory_utilization=qwenemo_gpu_memory_utilization,
         )
 
-        self.gpt = UnifiedVoice(indextts_vllm, **self.cfg.gpt)
+        if self.backend == "vllm":
+            from vllm.engine.arg_utils import AsyncEngineArgs
+            from vllm.v1.engine.async_llm import AsyncLLM
+            from indextts.gpt.model_vllm_v2 import UnifiedVoice
+
+            engine_args = AsyncEngineArgs(
+                model=os.path.join(model_dir, "gpt"),
+                tensor_parallel_size=1,
+                dtype="auto",
+                gpu_memory_utilization=gpu_memory_utilization,
+                async_scheduling=True,
+                enable_mm_embeds=True,
+                enable_chunked_prefill=False,
+            )
+            self.gpt = UnifiedVoice(AsyncLLM.from_engine_args(engine_args), **self.cfg.gpt)
+        else:
+            from indextts.gpt.model_v2 import UnifiedVoice
+
+            self.gpt = UnifiedVoice(**self.cfg.gpt)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
         load_checkpoint(self.gpt, self.gpt_path)
         self.gpt = self.gpt.to(self.device)
-        # if self.is_fp16:
-        #     self.gpt.eval().half()
-        # else:
-        #     self.gpt.eval()
         self.gpt.eval()
+        if self.backend == "torch":
+            # The native inference wrapper shares the already-loaded model modules,
+            # so creating it after ``to(cpu)`` does not duplicate the GPT weights.
+            self.gpt.post_init_gpt2_config(kv_cache=True, half=False)
         logger.info(f">> GPT weights restored from: {self.gpt_path}")
 
         if self.use_cuda_kernel:
@@ -243,7 +254,21 @@ class IndexTTS2:
 
         return wavs_list
     
-    async def infer(self, spk_audio_prompt, text, output_path,
+    async def infer(self, *args, **kwargs):
+        """Run one request at a time on the native CPU backend.
+
+        Each IndexTTS2 request has several large intermediate tensors. Serializing
+        requests is intentional: it prevents an accidental second request from
+        doubling the working set on memory-constrained CPU hosts.
+        """
+        if self.backend != "torch":
+            return await self._infer_unlocked(*args, **kwargs)
+        if self._cpu_inference_lock is None:
+            self._cpu_inference_lock = asyncio.Lock()
+        async with self._cpu_inference_lock:
+            return await self._infer_unlocked(*args, **kwargs)
+
+    async def _infer_unlocked(self, spk_audio_prompt, text, output_path,
               emo_audio_prompt=None, emo_alpha=1.0,
               emo_vector=None,
               use_emo_text=False, emo_text=None, use_random=False, interval_silence=200,
@@ -365,15 +390,42 @@ class IndexTTS2:
                     emovec = emovec_mat + (1 - torch.sum(weight_vector)) * emovec
                     # emovec = emovec_mat
 
-                codes, speech_conditioning_latent = await self.gpt.inference_speech(
-                    spk_cond_emb,
-                    text_tokens,
-                    emo_cond_emb,
+                inference_args = dict(
+                    speech_condition=spk_cond_emb,
+                    text_inputs=text_tokens,
+                    emo_speech_condition=emo_cond_emb,
                     cond_lengths=torch.tensor([spk_cond_emb.shape[-1]], device=text_tokens.device),
                     emo_cond_lengths=torch.tensor([emo_cond_emb.shape[-1]], device=text_tokens.device),
                     emo_vec=emovec,
-                    seed=segment_seed,
                 )
+                if self.backend == "vllm":
+                    codes, speech_conditioning_latent = await self.gpt.inference_speech(
+                        **inference_args,
+                        seed=segment_seed,
+                    )
+                else:
+                    # Native Hugging Face generation is synchronous. Keep it off
+                    # the event loop so FastAPI/Gradio can still serve health checks.
+                    # CPU requests should be serialized by the callers because a
+                    # second generation nearly doubles the model's working set.
+                    torch_args = {
+                        "do_sample": generation_kwargs.get("do_sample", True),
+                        "top_p": generation_kwargs.get("top_p", 0.8),
+                        "top_k": generation_kwargs.get("top_k", 30),
+                        "temperature": generation_kwargs.get("temperature", 1.0),
+                        "repetition_penalty": generation_kwargs.get("repetition_penalty", 10.0),
+                        "max_generate_length": generation_kwargs.get("max_mel_tokens", 2048),
+                        "use_cache": True,
+                    }
+                    if segment_seed is not None:
+                        # ``generate`` uses PyTorch's global RNG. It is safe here
+                        # because CPU inference is deliberately serialized.
+                        torch.manual_seed(segment_seed)
+                    codes, speech_conditioning_latent = await asyncio.to_thread(
+                        self.gpt.inference_speech,
+                        **inference_args,
+                        **torch_args,
+                    )
                 gpt_gen_time += time.perf_counter() - m_start_time
                 # if not has_warned and (codes[:, -1] != self.stop_mel_token).any():
                 #     warnings.warn(
@@ -509,25 +561,32 @@ def find_most_similar_cosine(query_vector, matrix):
     return most_similar_index
 
 class QwenEmotion:
-    def __init__(self, model_dir, gpu_memory_utilization=0.1):
+    """Emotion-text classifier with a lazy native CPU fallback.
+
+    The Qwen model is only needed when ``use_emo_text=True``. Deferring it keeps
+    the ordinary reference-audio and emotion-vector paths within the smallest
+    possible CPU memory footprint.
+    """
+
+    def __init__(self, model_dir, backend="vllm", device="cuda:0", gpu_memory_utilization=0.1):
         self.model_dir = model_dir
+        self.backend = backend
+        self.device = torch.device(device)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir)
+        self.model = None
 
-        # self.model = AutoModelForCausalLM.from_pretrained(
-        #     self.model_dir,
-        #     torch_dtype="float16",  # "auto"
-        #     # device_map="auto"
-        # )
-        # self.model = self.model.to("cuda")
+        if self.backend == "vllm":
+            from vllm.engine.arg_utils import AsyncEngineArgs
+            from vllm.v1.engine.async_llm import AsyncLLM
 
-        engine_args = AsyncEngineArgs(
-            model=model_dir,
-            tensor_parallel_size=1,
-            dtype="auto",
-            gpu_memory_utilization=gpu_memory_utilization,
-            max_model_len=2048,
-        )
-        self.model = AsyncLLM.from_engine_args(engine_args)
+            engine_args = AsyncEngineArgs(
+                model=model_dir,
+                tensor_parallel_size=1,
+                dtype="auto",
+                gpu_memory_utilization=gpu_memory_utilization,
+                max_model_len=2048,
+            )
+            self.model = AsyncLLM.from_engine_args(engine_args)
 
         self.prompt = "文本情感分类"
         self.convert_dict = {
@@ -586,38 +645,19 @@ class QwenEmotion:
 
         return emotion_dict
 
-    async def inference(self, text_input, seed=None):
+    def _build_prompt(self, text_input):
         messages = [
             {"role": "system", "content": f"{self.prompt}"},
             {"role": "user", "content": f"{text_input}"}
         ]
-        text = self.tokenizer.apply_chat_template(
+        return self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=False,
         )
-        model_inputs = self.tokenizer(text)["input_ids"]
-        # model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
 
-        # conduct text completion
-        # generated_ids = self.model.generate(
-        #     **model_inputs,
-        #     max_new_tokens=32768,
-        #     pad_token_id=self.tokenizer.eos_token_id
-        # )
-        # output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
-
-        
-        sampling_params = SamplingParams(
-            max_tokens=2048,  # 32768
-            seed=seed,
-        )
-        tokens_prompt = TokensPrompt(prompt_token_ids=model_inputs)
-        output_generator = self.model.generate(tokens_prompt, sampling_params=sampling_params, request_id=uuid.uuid4().hex)
-        async for output in output_generator:
-            pass
-        output_ids = output.outputs[0].token_ids[:-2]
+    def _parse_output(self, output_ids):
 
         # parsing thinking content
         try:
@@ -629,3 +669,47 @@ class QwenEmotion:
         content = self.tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
         emotion_dict = self.convert(content)
         return emotion_dict, content
+
+    def _load_torch_model(self):
+        if self.model is None:
+            logger.info(">> Loading Qwen emotion model for native CPU inference")
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_dir,
+                torch_dtype=torch.float32,
+            ).to(self.device).eval()
+
+    def _inference_torch(self, text_input, seed=None):
+        self._load_torch_model()
+        prompt = self._build_prompt(text_input)
+        model_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        if seed is not None:
+            torch.manual_seed(seed)
+        with torch.inference_mode():
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=256,
+                do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+        output_ids = generated_ids[0][model_inputs.input_ids.shape[1]:].tolist()
+        return self._parse_output(output_ids)
+
+    async def inference(self, text_input, seed=None):
+        if self.backend == "torch":
+            return await asyncio.to_thread(self._inference_torch, text_input, seed)
+
+        from vllm import SamplingParams, TokensPrompt
+        import uuid
+
+        model_inputs = self.tokenizer(self._build_prompt(text_input))["input_ids"]
+        sampling_params = SamplingParams(max_tokens=2048, seed=seed)
+        tokens_prompt = TokensPrompt(prompt_token_ids=model_inputs)
+        output_generator = self.model.generate(
+            tokens_prompt,
+            sampling_params=sampling_params,
+            request_id=uuid.uuid4().hex,
+        )
+        async for output in output_generator:
+            pass
+        output_ids = output.outputs[0].token_ids[:-2]
+        return self._parse_output(output_ids)

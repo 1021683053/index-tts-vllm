@@ -41,6 +41,8 @@ async def lifespan(app: FastAPI):
     tts = IndexTTS2(
         model_dir=args.model_dir,
         is_fp16=args.is_fp16,
+        device=args.device,
+        backend=args.backend,
         gpu_memory_utilization=args.gpu_memory_utilization,
         qwenemo_gpu_memory_utilization=args.qwenemo_gpu_memory_utilization,
     )
@@ -288,6 +290,8 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=9009)
     parser.add_argument("--model_dir", type=str, default="checkpoints/IndexTTS-2-vLLM", help="Model checkpoints directory")
+    parser.add_argument("--backend", choices=("vllm", "torch"), default="vllm", help="Inference backend; use torch with --device cpu for native CPU inference")
+    parser.add_argument("--device", type=str, default=None, help="PyTorch device. CPU backend requires 'cpu'.")
     parser.add_argument("--is_fp16", action="store_true", default=False, help="Fp16 infer")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.25)
     parser.add_argument("--qwenemo_gpu_memory_utilization", type=float, default=0.10)

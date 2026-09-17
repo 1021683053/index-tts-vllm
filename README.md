@@ -55,6 +55,31 @@ pip install uv
 uv pip install -r requirements.txt -c overrides.txt
 ```
 
+### CPU（IndexTTS2，实验性）
+
+`v2-cpu` 分支提供原生 PyTorch CPU 后端，不使用 vLLM，也不需要更换现有 IndexTTS2 权重。CPU 推理为单请求串行模式，适合离线或低频生成；`use_emo_text` 首次使用时才会加载 Qwen 情感模型，从而避免普通请求占用这部分内存。
+
+```bash
+uv venv --python 3.12 --seed
+source .venv/bin/activate
+uv pip install -r requirements-cpu.txt --torch-backend cpu
+
+# WebUI
+python webui_v2.py --backend torch --device cpu --model_dir checkpoints/IndexTTS-2-vLLM
+
+# API
+python api_server_v2.py --backend torch --device cpu --model_dir checkpoints/IndexTTS-2-vLLM
+```
+
+也可构建 CPU 镜像（模型目录在运行时挂载）：
+
+```bash
+docker build -f Dockerfile.cpu -t indextts2-cpu .
+docker run --rm -p 9009:9009 -v "$PWD/checkpoints:/app/checkpoints:ro" indextts2-cpu --model_dir /app/checkpoints/IndexTTS-2-vLLM
+```
+
+CPU 后端不支持 `--is_fp16`；请保持 FP32。8GB 内存不属于支持配置，尤其不能使用 `use_emo_text`。建议至少 16GB 内存，并在部署主机上用短文本、单请求先验证实际峰值内存和生成时间。
+
 
 ### 4. 下载模型权重
 
