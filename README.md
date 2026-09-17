@@ -62,9 +62,12 @@ uv pip install -r requirements.txt -c overrides.txt
 ```bash
 uv venv --python 3.11 --seed
 source .venv/bin/activate
+pip install \
+  --index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
+  --extra-index-url https://mirrors.aliyun.com/pypi/simple \
+  torch==2.1.2+cpu torchaudio==2.1.2+cpu
 uv pip install \
   --default-index https://mirrors.aliyun.com/pypi/simple \
-  --extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
   -r requirements-cpu.txt
 
 # WebUI

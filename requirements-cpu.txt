@@ -1,11 +1,7 @@
 # Native CPU runtime for IndexTTS2. This deliberately does not install vLLM.
-# Both indexes are domestic Aliyun mirrors. The second one supplies CPU-only
-# PyTorch wheels for Linux x86_64.
---index-url https://mirrors.aliyun.com/pypi/simple
---extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu
-
-torch
-torchaudio
+# Install the pinned CPU-only torch and torchaudio wheels before this file; see
+# Dockerfile.cpu and README.md. Keeping their dedicated mirror out of this file
+# prevents uv from resolving unrelated packages (such as numpy) against it.
 transformers
 safetensors
 accelerate

@@ -4,8 +4,7 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
-    PIP_EXTRA_INDEX_URL=https://mirrors.aliyun.com/pytorch-wheels/cpu
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i \
@@ -25,9 +24,12 @@ WORKDIR /app
 
 COPY requirements-cpu.txt ./
 RUN pip install --no-cache-dir uv \
+    && pip install --no-cache-dir \
+        --index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
+        --extra-index-url https://mirrors.aliyun.com/pypi/simple \
+        torch==2.1.2+cpu torchaudio==2.1.2+cpu \
     && uv pip install --system \
         --default-index https://mirrors.aliyun.com/pypi/simple \
-        --extra-index-url https://mirrors.aliyun.com/pytorch-wheels/cpu \
         -r requirements-cpu.txt
 
 COPY indextts /app/indextts
